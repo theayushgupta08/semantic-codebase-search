@@ -1,0 +1,15 @@
+lancedb
+tree-sitter>=0.22.0
+tree-sitter-python>=0.21.0
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-go
+tree-sitter-cpp
+tree-sitter-scala
+tree-sitter-html
+tree-sitter-css
+google-genai
+rich
+typer
+pytest
