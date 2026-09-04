@@ -200,6 +200,48 @@ def get_dir_size(path='.'):
                 total += get_dir_size(entry.path)
     return total
 
+def ensure_gitignore(directory: str) -> None:
+    """
+    Ensure that generated files (.code_search_db/ and .index_state.json)
+    are listed in the target directory's .gitignore file. Creates .gitignore if missing.
+    """
+    gitignore_path = os.path.join(directory, ".gitignore")
+    required_entries = [
+        (".code_search_db", ".code_search_db/"),
+        (".index_state.json", ".index_state.json"),
+    ]
+    
+    existing_lines = []
+    content = ""
+    if os.path.isfile(gitignore_path):
+        try:
+            with open(gitignore_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                existing_lines = [line.strip() for line in content.splitlines()]
+        except Exception:
+            return
+
+    entries_to_add = []
+    for base_name, entry in required_entries:
+        if not any(line == base_name or line == f"{base_name}/" for line in existing_lines):
+            entries_to_add.append(entry)
+
+    if not entries_to_add:
+        return
+
+    try:
+        with open(gitignore_path, "a", encoding="utf-8") as f:
+            if content and not content.endswith("\n"):
+                f.write("\n")
+            if not content:
+                f.write("# Semantic Codebase Search\n")
+            elif "# Semantic Codebase Search" not in content:
+                f.write("\n# Semantic Codebase Search\n")
+            for entry in entries_to_add:
+                f.write(f"{entry}\n")
+    except Exception:
+        pass
+
 @app.command()
 def index(
     path: str = typer.Argument(".", help="Path to the directory to index"),
@@ -215,6 +257,9 @@ def index(
 
     # Validate API key before starting indexing
     validate_api_key(path, api_key=api_key)
+
+    # Ensure generated database and state files are in .gitignore
+    ensure_gitignore(path)
         
     console.print(f"[bold green]Indexing codebase at:[/bold green] {path}")
     

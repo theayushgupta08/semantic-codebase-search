@@ -3,7 +3,7 @@ import tempfile
 import pytest
 import typer
 from typer.testing import CliRunner
-from src.cli import app, validate_api_key, load_env, parse_retry_delay, handle_embedding_error, get_source_files
+from src.cli import app, validate_api_key, load_env, parse_retry_delay, handle_embedding_error, get_source_files, ensure_gitignore
 
 runner = CliRunner()
 
@@ -163,6 +163,66 @@ def test_get_source_files_ignores_target_and_build_dirs():
         assert valid_file in files
         assert target_file not in files
         assert node_file not in files
+
+def test_ensure_gitignore_creates_new_file():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        ensure_gitignore(temp_dir)
+        gitignore_path = os.path.join(temp_dir, ".gitignore")
+        assert os.path.exists(gitignore_path)
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert ".code_search_db/" in content
+        assert ".index_state.json" in content
+
+def test_ensure_gitignore_appends_missing():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        gitignore_path = os.path.join(temp_dir, ".gitignore")
+        with open(gitignore_path, "w", encoding="utf-8") as f:
+            f.write("node_modules/\n.env")  # Note: no trailing newline
+        ensure_gitignore(temp_dir)
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "node_modules/" in content
+        assert ".env" in content
+        assert ".code_search_db/" in content
+        assert ".index_state.json" in content
+        # Ensure it wasn't merged onto the same line as .env
+        lines = [line.strip() for line in content.splitlines()]
+        assert ".env" in lines
+        assert ".code_search_db/" in lines
+        assert ".index_state.json" in lines
+
+def test_ensure_gitignore_idempotent():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        gitignore_path = os.path.join(temp_dir, ".gitignore")
+        with open(gitignore_path, "w", encoding="utf-8") as f:
+            f.write(".code_search_db/\n.index_state.json\n")
+        ensure_gitignore(temp_dir)
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        # Should not duplicate lines
+        assert content.count(".code_search_db") == 1
+        assert content.count(".index_state.json") == 1
+
+def test_cli_index_updates_gitignore(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "valid_test_key")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        sample_file = os.path.join(temp_dir, "app.py")
+        with open(sample_file, "w", encoding="utf-8") as f:
+            f.write("def app(): pass\n")
+            
+        from unittest.mock import patch
+        with patch("src.cli.get_embedding", return_value=[0.1] * 3072):
+            result = runner.invoke(app, ["index", temp_dir])
+            assert result.exit_code == 0
+            
+            gitignore_path = os.path.join(temp_dir, ".gitignore")
+            assert os.path.exists(gitignore_path)
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert ".code_search_db/" in content
+            assert ".index_state.json" in content
+
 
 
 
