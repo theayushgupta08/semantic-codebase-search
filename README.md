@@ -39,7 +39,7 @@ This tool is built on a modern, high-performance stack:
 Since this is a fully packaged Python CLI, you can install it globally on your machine directly from GitHub:
 
 ```bash
-pip install git+https://github.com/rsl-ayush2gupta/semantic-codebase-search.git
+pip install git+https://github.com/theayushgupta08/semantic-codebase-search.git
 ```
 
 *(This will make the `code-search` command available everywhere in your terminal!)*
@@ -50,7 +50,10 @@ The tool uses Google's Gemini API to generate embeddings. You need a free API ke
 
 Export the key in your terminal profile (`~/.zshrc`, `~/.bashrc`, or `~/.profile`):
 ```bash
+# On MacOS/Linux
 export GEMINI_API_KEY="your_api_key_here"
+# On Windows
+set GEMINI_API_KEY="your_api_key_here"
 ```
 *(Alternatively, you can place a `.env` file containing `GEMINI_API_KEY=...` in the directory you are indexing).*
 
