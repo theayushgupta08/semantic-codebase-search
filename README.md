@@ -48,14 +48,18 @@ pip install git+https://github.com/theayushgupta08/semantic-codebase-search.git
 
 The tool uses Google's Gemini API to generate embeddings. You need a free API key from [Google AI Studio](https://aistudio.google.com/).
 
-Export the key in your terminal profile (`~/.zshrc`, `~/.bashrc`, or `~/.profile`):
+Export the key in your terminal profile (`~/.zshrc`, `~/.bashrc`, or PowerShell profile):
 ```bash
 # On MacOS/Linux
 export GEMINI_API_KEY="your_api_key_here"
-# On Windows
+
+# On Windows (PowerShell)
+$env:GEMINI_API_KEY="your_api_key_here"
+
+# On Windows (Command Prompt / CMD)
 set GEMINI_API_KEY="your_api_key_here"
 ```
-*(Alternatively, you can place a `.env` file containing `GEMINI_API_KEY=...` in the directory you are indexing).*
+*(Alternatively, you can place a `.env` file containing `GEMINI_API_KEY=...` in the directory you are indexing, or pass `--api-key "your_api_key_here"` directly to any command).*
 
 ---
 

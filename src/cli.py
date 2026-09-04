@@ -14,17 +14,78 @@ from src.embeddings import get_embedding
 from src.db import DatabaseManager
 from src.state import StateManager
 
-# Load env variables manually for API keys
-if os.path.exists(".env"):
-    with open(".env", "r") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                key, val = line.split("=", 1)
-                os.environ[key] = val
-
 app = typer.Typer(help="Semantic Codebase Search CLI")
 console = Console()
+
+def load_env(target_dir: str = None) -> None:
+    """
+    Load environment variables from .env files in both the current working
+    directory and the target directory, if different.
+    """
+    env_paths = [os.path.abspath(".env")]
+    if target_dir:
+        target_env = os.path.abspath(os.path.join(target_dir, ".env"))
+        if target_env not in env_paths:
+            env_paths.append(target_env)
+            
+    for env_path in env_paths:
+        if os.path.isfile(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            key, val = line.split("=", 1)
+                            key = key.strip()
+                            val = val.strip().strip("\"'")
+                            if key:
+                                os.environ[key] = val
+            except Exception:
+                pass
+
+# Load env variables on startup
+load_env()
+
+def validate_api_key(target_path: str = None, api_key: str = None) -> str:
+    """
+    Validate that a Gemini API key is configured before proceeding.
+    Checks explicit parameter, environment variables (GEMINI_API_KEY, GOOGLE_API_KEY), and .env files.
+    Exits with code 1 if no valid key is found.
+    """
+    if api_key and api_key.strip():
+        resolved_key = api_key.strip().strip("\"'")
+        os.environ["GEMINI_API_KEY"] = resolved_key
+        return resolved_key
+
+    if target_path:
+        load_env(target_path)
+    else:
+        load_env()
+
+    api_key_val = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip().strip("\"'")
+    placeholder_keys = {
+        "your_api_key_here",
+        "your_gemini_api_key_here",
+        "placeholder",
+        "xxx",
+        "your-key-here",
+    }
+
+    if not api_key_val or api_key_val.lower() in placeholder_keys:
+        console.print("\n[bold red]Error: Gemini API key not found.[/bold red]")
+        console.print("An API key is required to generate embeddings before indexing your codebase.\n")
+        console.print("Please set the [bold cyan]GEMINI_API_KEY[/bold cyan] environment variable or add it to a [bold cyan].env[/bold cyan] file.")
+        console.print("\n[bold]Configuration Options:[/bold]")
+        console.print("  - [bold]Windows (PowerShell):[/bold] [yellow]$env:GEMINI_API_KEY=\"your_api_key_here\"[/yellow] [dim](do NOT use 'set' in PowerShell)[/dim]")
+        console.print("  - [bold]Windows (CMD):[/bold]        [yellow]set GEMINI_API_KEY=\"your_api_key_here\"[/yellow]")
+        console.print("  - [bold]Linux/macOS:[/bold]          [yellow]export GEMINI_API_KEY=\"your_api_key_here\"[/yellow]")
+        console.print("  - [bold].env file:[/bold]            Place a [yellow].env[/yellow] file in the directory being indexed:")
+        console.print("                          [yellow]GEMINI_API_KEY=your_api_key_here[/yellow]")
+        console.print("  - [bold]CLI Flag:[/bold]             [yellow]code-search index . --api-key \"your_api_key_here\"[/yellow]")
+        console.print("\n[dim]Get a free API key at:[/dim] [link=https://aistudio.google.com/]https://aistudio.google.com/[/link]\n")
+        raise typer.Exit(code=1)
+
+    return api_key_val
 
 def get_file_hash(file_path: str) -> str:
     hasher = hashlib.sha256()
@@ -58,6 +119,7 @@ def get_dir_size(path='.'):
 @app.command()
 def index(
     path: str = typer.Argument(".", help="Path to the directory to index"),
+    api_key: str = typer.Option(None, "--api-key", help="Gemini API key override"),
 ):
     """
     Index a codebase for semantic search.
@@ -66,6 +128,9 @@ def index(
     if not os.path.exists(path):
         console.print(f"[red]Error: Path '{path}' does not exist.[/red]")
         raise typer.Exit(code=1)
+
+    # Validate API key before starting indexing
+    validate_api_key(path, api_key=api_key)
         
     console.print(f"[bold green]Indexing codebase at:[/bold green] {path}")
     
@@ -172,6 +237,7 @@ def search(
     query: str = typer.Argument(..., help="Semantic query to search for"),
     path: str = typer.Option(".", "--path", "-p", help="Path to the indexed directory"),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of results to return"),
+    api_key: str = typer.Option(None, "--api-key", help="Gemini API key override"),
 ):
     """
     Search the indexed codebase.
@@ -182,6 +248,8 @@ def search(
     if not os.path.exists(db_path):
         console.print(f"[red]Error: No index found at '{path}'. Run 'code-search index {path}' first.[/red]")
         raise typer.Exit(code=1)
+
+    validate_api_key(path, api_key=api_key)
         
     db = DatabaseManager(db_path=db_path)
     
