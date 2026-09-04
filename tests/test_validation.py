@@ -3,7 +3,7 @@ import tempfile
 import pytest
 import typer
 from typer.testing import CliRunner
-from src.cli import app, validate_api_key, load_env
+from src.cli import app, validate_api_key, load_env, parse_retry_delay, handle_embedding_error, get_source_files
 
 runner = CliRunner()
 
@@ -98,5 +98,71 @@ def test_cli_index_with_api_key_flag():
             result = runner.invoke(app, ["index", temp_dir, "--api-key", "my_flag_key"])
             assert result.exit_code == 0
             assert "Indexing complete" in result.output
+
+def test_parse_retry_delay():
+    msg1 = "Please retry in 23.874270388s."
+    assert parse_retry_delay(msg1) == "23.874270388s"
+
+    msg2 = "{'error': ..., 'details': [{'@type': ..., 'retryDelay': '45s'}]}"
+    assert parse_retry_delay(msg2) == "45s"
+
+    msg3 = "Unknown generic failure without delay"
+    assert parse_retry_delay(msg3) is None
+
+def test_handle_embedding_error_quota():
+    from google.genai.errors import APIError
+    err = APIError(429, "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: free_tier_requests, limit: 1000. Please retry in 23.8s.")
+    
+    with pytest.raises(typer.Exit) as exc_info:
+        handle_embedding_error(err, file_path="test_file.py")
+    assert exc_info.value.exit_code == 1
+
+def test_cli_index_aborts_on_quota_error(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "valid_test_key")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create 2 sample files
+        f1 = os.path.join(temp_dir, "file1.py")
+        f2 = os.path.join(temp_dir, "file2.py")
+        with open(f1, "w", encoding="utf-8") as f:
+            f.write("def func1(): pass\n")
+        with open(f2, "w", encoding="utf-8") as f:
+            f.write("def func2(): pass\n")
+            
+        from google.genai.errors import APIError
+        from unittest.mock import patch
+        
+        # Simulate 429 quota exhaustion on get_embedding
+        quota_err = APIError(429, "429 RESOURCE_EXHAUSTED. Quota exceeded for free_tier_requests. Please retry in 25s.")
+        with patch("src.cli.get_embedding", side_effect=quota_err):
+            result = runner.invoke(app, ["index", temp_dir])
+            # Process must stop immediately with exit code 1
+            assert result.exit_code == 1
+            assert "API Quota Exceeded (429 RESOURCE_EXHAUSTED)" in result.output
+            assert "Suggested Wait Time: 25s" in result.output
+            assert "1,000 embedding requests per day" in result.output
+
+def test_get_source_files_ignores_target_and_build_dirs():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        src_dir = os.path.join(temp_dir, "src")
+        target_dir = os.path.join(temp_dir, "target", "classes")
+        node_modules = os.path.join(temp_dir, "node_modules", "pkg")
+        
+        os.makedirs(src_dir)
+        os.makedirs(target_dir)
+        os.makedirs(node_modules)
+        
+        valid_file = os.path.join(src_dir, "app.py")
+        target_file = os.path.join(target_dir, "Generated.html")
+        node_file = os.path.join(node_modules, "index.js")
+        
+        with open(valid_file, "w") as f: f.write("print('hi')")
+        with open(target_file, "w") as f: f.write("<html></html>")
+        with open(node_file, "w") as f: f.write("console.log('hi')")
+        
+        files = get_source_files(temp_dir)
+        assert valid_file in files
+        assert target_file not in files
+        assert node_file not in files
+
 
 

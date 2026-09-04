@@ -1,7 +1,8 @@
 import os
 import hashlib
 import json
-from typing import List, Dict
+import re
+from typing import List, Dict, Optional
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -87,6 +88,82 @@ def validate_api_key(target_path: str = None, api_key: str = None) -> str:
 
     return api_key_val
 
+def parse_retry_delay(error_msg: str) -> Optional[str]:
+    """Extract suggested retry delay time from API error messages if available."""
+    match = re.search(r"retry in ([0-9.]+\s*s(?:econds?)?)", error_msg, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"['\"]retryDelay['\"]:\s*['\"]([^'\"]+)['\"]", error_msg)
+    if match:
+        return match.group(1).strip()
+    return None
+
+def handle_embedding_error(e: Exception, file_path: Optional[str] = None) -> None:
+    """
+    Display a clear, structured error message when embedding fails (e.g. rate limit / quota 429,
+    authentication failure, or server error) and terminate the process cleanly.
+    """
+    err_str = str(e)
+    code = getattr(e, "code", None)
+    
+    is_quota_error = (
+        code == 429
+        or "429" in err_str
+        or "RESOURCE_EXHAUSTED" in err_str
+        or "quota" in err_str.lower()
+        or "rate limit" in err_str.lower()
+    )
+    
+    is_auth_error = (
+        code in (401, 403)
+        or "401" in err_str
+        or "403" in err_str
+        or "PERMISSION_DENIED" in err_str
+        or "UNAUTHENTICATED" in err_str
+        or "API_KEY_INVALID" in err_str
+        or "api key not valid" in err_str.lower()
+    )
+
+    console.print()
+    if is_quota_error:
+        console.print("[bold red]API Quota Exceeded (429 RESOURCE_EXHAUSTED)[/bold red]")
+        console.print("You have exceeded your Gemini API request quota or rate limit for [bold cyan]gemini-embedding-2[/bold cyan].\n")
+        
+        if file_path:
+            console.print(f"  - [bold]Failed File:[/bold] [yellow]{file_path}[/yellow]")
+            
+        retry_delay = parse_retry_delay(err_str)
+        if retry_delay:
+            console.print(f"  - [bold]Suggested Wait Time:[/bold] [cyan]{retry_delay}[/cyan]")
+            
+        if "free_tier" in err_str.lower() or "1000" in err_str:
+            console.print("  - [bold]Quota Limit:[/bold] Free tier is limited to 1,000 embedding requests per day.")
+            
+        console.print("\n[bold]Next Steps:[/bold]")
+        console.print("  1. [bold]Wait for quota reset:[/bold] Free tier requests reset daily (or wait a few seconds/minutes if per-minute rate limit).")
+        console.print("  2. [bold]Switch API Key:[/bold] Use another project or paid key: [yellow]code-search index . --api-key \"YOUR_KEY\"[/yellow]")
+        console.print("  3. [bold]Resume Anytime:[/bold] Previously completed files are already saved in the local database! Re-running will seamlessly continue.")
+        console.print("\n[dim]Monitor usage & quotas at:[/dim] [link=https://ai.dev/rate-limit]https://ai.dev/rate-limit[/link]\n")
+        
+    elif is_auth_error:
+        console.print("[bold red]API Authentication Error (401/403)[/bold red]")
+        console.print("The Gemini API rejected your API key as invalid or unauthorized.\n")
+        if file_path:
+            console.print(f"  - [bold]Failed File:[/bold] [yellow]{file_path}[/yellow]")
+        console.print("\n[bold]Next Steps:[/bold]")
+        console.print("  - Verify your key at [link=https://aistudio.google.com/]https://aistudio.google.com/[/link]")
+        console.print("  - Set a valid key: [yellow]$env:GEMINI_API_KEY=\"your_key\"[/yellow] or update your [yellow].env[/yellow] file.\n")
+        
+    else:
+        console.print("[bold red]Error Generating Embedding[/bold red]")
+        if file_path:
+            console.print(f"  - [bold]Failed File:[/bold] [yellow]{file_path}[/yellow]")
+        console.print(f"  - [bold]Details:[/bold] [red]{err_str}[/red]\n")
+        console.print("[bold]Stopping indexing process to prevent corrupting state.[/bold]")
+        console.print("Previously indexed files have been saved in the local database.\n")
+
+    raise typer.Exit(code=1)
+
 def get_file_hash(file_path: str) -> str:
     hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
@@ -94,12 +171,19 @@ def get_file_hash(file_path: str) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
+IGNORED_DIRECTORIES = {
+    ".git", "venv", ".venv", "env", "__pycache__", 
+    ".code_search_db", ".test_code_search_db", "node_modules", 
+    "target", "build", "dist", "out", "bin", "obj", 
+    ".idea", ".vscode", ".pytest_cache", ".next", ".nuxt", "vendor"
+}
+
 def get_source_files(directory: str) -> List[str]:
     source_files = []
     supported_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".cpp", ".cc", ".cxx", ".hpp", ".h", ".scala", ".html", ".css"}
-    for root, _, files in os.walk(directory):
-        if ".git" in root or "venv" in root or "__pycache__" in root or ".code_search_db" in root or "node_modules" in root:
-            continue
+    for root, dirs, files in os.walk(directory):
+        # Exclude build, cache, and hidden directories from traversal
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRECTORIES and not d.startswith(".")]
         for file in files:
             _, ext = os.path.splitext(file)
             if ext.lower() in supported_exts:
@@ -204,7 +288,7 @@ def index(
                     chunk_ids.append(chunk["chunk_id"])
                     valid_chunks.append(chunk)
                 except Exception as e:
-                    console.print(f"\n[red]Failed to embed chunk in {fpath}: {e}[/red]")
+                    handle_embedding_error(e, file_path=fpath)
                     
             if valid_chunks:
                 db.upsert_chunks(valid_chunks)
@@ -223,7 +307,7 @@ def index(
                     chunk_ids.append(chunk["chunk_id"])
                     valid_chunks.append(chunk)
                 except Exception as e:
-                    console.print(f"\n[red]Failed to embed chunk in {fpath}: {e}[/red]")
+                    handle_embedding_error(e, file_path=fpath)
             if valid_chunks:
                 db.upsert_chunks(valid_chunks)
             state_manager.update_file_state(fpath, file_hashes[fpath], chunk_ids)
@@ -257,8 +341,7 @@ def search(
         try:
             query_vector = get_embedding(query)
         except Exception as e:
-            console.print(f"[red]Error generating embedding: {e}[/red]")
-            raise typer.Exit(1)
+            handle_embedding_error(e)
         
     with console.status("[bold cyan]Searching database..."):
         try:
